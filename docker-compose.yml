@@ -1,0 +1,24 @@
+services:
+  web-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    ports:
+      - "80:5000"
+    volumes:
+      - ./data:/data
+    environment:
+      - FLASK_SECRET_KEY=${FLASK_SECRET_KEY}
+      - WEB_USERNAME=${WEB_USERNAME} # Username for Web UI
+      - WEB_PASSWORD=${WEB_PASSWORD} # Password for Web UI
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 20s

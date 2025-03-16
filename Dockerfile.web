@@ -1,0 +1,26 @@
+FROM python:3.9-slim
+
+# Install dependencies
+RUN pip install --no-cache-dir flask werkzeug gunicorn
+
+# Create app directory
+WORKDIR /app
+
+# Copy application files
+COPY app.py /app/
+COPY templates/ /app/templates/
+
+# Expose port
+EXPOSE 5000
+
+# Set environment variables with defaults
+ENV FLASK_SECRET_KEY=${FLASK_SECRET_KEY}
+ENV WEB_USERNAME=${WEB_USERNAME}
+ENV WEB_PASSWORD=${WEB_PASSWORD}
+
+# Create the data directory and set permissions
+RUN mkdir -p /data && \
+  chmod -R 777 /data
+
+# Run the web application with gunicorn with increased timeout and no request limit
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--timeout", "3600", "--limit-request-line", "0", "--limit-request-field_size", "0", "app:app"]
