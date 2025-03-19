@@ -6,9 +6,13 @@ import logging
 import time
 import uuid
 import shutil
+import mimetypes
+from io import BytesIO
 from werkzeug.utils import secure_filename
 from functools import wraps
 from datetime import datetime, timedelta
+from PIL import Image
+import ffmpeg
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(16))
@@ -87,6 +91,24 @@ def get_full_path(path):
     return os.path.join(DATA_DIR, path)
 
 
+def is_image(filename):
+    """Check if a file is an image based on its mimetype"""
+    mime_type, _ = mimetypes.guess_type(filename)
+    return mime_type and mime_type.startswith('image/')
+
+
+def is_video(filename):
+    """Check if a file is a video based on its mimetype"""
+    mime_type, _ = mimetypes.guess_type(filename)
+    return mime_type and mime_type.startswith('video/')
+
+
+def is_pdf(filename):
+    """Check if a file is a PDF based on its mimetype"""
+    mime_type, _ = mimetypes.guess_type(filename)
+    return mime_type == 'application/pdf'
+
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
@@ -94,9 +116,8 @@ def login():
         password = request.form.get('password')
         if username == WEB_USERNAME and password == WEB_PASSWORD:
             session['logged_in'] = True
-            session.permanent = True  # Make session permanent
-            app.permanent_session_lifetime = timedelta(
-                days=1)  # Set session lifetime
+            session.permanent = True
+            app.permanent_session_lifetime = timedelta(days=1)
             flash('Login successful', 'success')
             next_page = request.args.get('next')
             return redirect(next_page or url_for('index'))
@@ -166,7 +187,10 @@ def browse_files(path):
                     'is_directory': is_dir,
                     'size': format_file_size(stats.st_size) if not is_dir else '-',
                     'modified': datetime.fromtimestamp(stats.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
-                    'path': os.path.join(path, filename).replace('\\', '/')
+                    'path': os.path.join(path, filename).replace('\\', '/'),
+                    'is_image': not is_dir and is_image(file_path),
+                    'is_video': not is_dir and is_video(file_path),
+                    'is_pdf': not is_dir and is_pdf(file_path)
                 }
                 files.append(file_info)
             except Exception as e:
@@ -185,7 +209,10 @@ def browse_files(path):
                 'is_directory': True,
                 'size': '-',
                 'modified': '-',
-                'path': parent_path
+                'path': parent_path,
+                'is_image': False,
+                'is_video': False,
+                'is_pdf': False
             })
 
     except Exception as e:
@@ -373,6 +400,140 @@ def create_directory():
         flash(f'Error creating directory: {str(e)}', 'danger')
 
     return redirect(url_for('browse', path=current_path))
+
+
+# New Thumbnail Routes
+
+@app.route('/thumbnail')
+@login_required
+def thumbnail():
+    """Generate a thumbnail for an image file"""
+    file_path = secure_path(request.args.get('path', ''))
+    width = int(request.args.get('width', 100))
+    height = int(request.args.get('height', 100))
+    
+    if not file_path:
+        abort(400, "No file specified")
+    
+    full_path = get_full_path(file_path)
+    
+    if not os.path.exists(full_path):
+        abort(404, "File not found")
+    
+    if not is_image(full_path):
+        abort(400, "Not an image file")
+    
+    try:
+        img = Image.open(full_path)
+        img.thumbnail((width, height))
+        
+        # Create an in-memory file
+        img_io = BytesIO()
+        img_format = img.format or 'JPEG'
+        img.save(img_io, format=img_format)
+        img_io.seek(0)
+        
+        return send_file(
+            img_io, 
+            mimetype=f'image/{img_format.lower()}',
+            download_name=f"thumb_{os.path.basename(file_path)}"
+        )
+    except Exception as e:
+        logger.error(f"Error generating thumbnail: {e}")
+        abort(500, "Failed to generate thumbnail")
+
+
+@app.route('/video-thumbnail')
+@login_required
+def video_thumbnail():
+    """Generate a thumbnail for a video file"""
+    file_path = secure_path(request.args.get('path', ''))
+    time_pos = float(request.args.get('time', 1.0))
+    width = int(request.args.get('width', 100))
+    height = int(request.args.get('height', 100))
+    
+    if not file_path:
+        abort(400, "No file specified")
+    
+    full_path = get_full_path(file_path)
+    
+    if not os.path.exists(full_path):
+        abort(404, "File not found")
+    
+    if not is_video(full_path):
+        abort(400, "Not a video file")
+    
+    try:
+        # Create a temporary file for the thumbnail
+        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_file:
+            temp_path = temp_file.name
+        
+        # Use ffmpeg to extract a frame
+        (
+            ffmpeg
+            .input(full_path, ss=time_pos)
+            .filter('scale', width, height)
+            .output(temp_path, vframes=1)
+            .overwrite_output()
+            .run(capture_stdout=True, capture_stderr=True)
+        )
+        
+        # Read the thumbnail and return it
+        with open(temp_path, 'rb') as f:
+            img_data = BytesIO(f.read())
+        
+        # Clean up
+        try:
+            os.unlink(temp_path)
+        except:
+            pass
+            
+        img_data.seek(0)
+        
+        return send_file(
+            img_data, 
+            mimetype='image/jpeg',
+            download_name=f"thumb_{os.path.basename(file_path)}.jpg"
+        )
+    except Exception as e:
+        logger.error(f"Error generating video thumbnail: {e}")
+        abort(500, "Failed to generate video thumbnail")
+
+
+@app.route('/preview')
+@login_required
+def preview_file():
+    """Show a preview of a file"""
+    file_path = secure_path(request.args.get('path', ''))
+    if not file_path:
+        abort(400, "No file specified")
+    
+    full_path = get_full_path(file_path)
+    
+    if not os.path.exists(full_path):
+        abort(404, "File not found")
+    
+    if os.path.isdir(full_path):
+        abort(400, "Cannot preview directories")
+    
+    mime_type, _ = mimetypes.guess_type(full_path)
+    
+    # For text-based files, return the content directly
+    if mime_type and (mime_type.startswith('text/') or mime_type in ['application/json', 'application/xml']):
+        try:
+            with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
+                content = f.read()
+            return content
+        except Exception as e:
+            logger.error(f"Error reading text file {file_path}: {e}")
+            abort(500, "Failed to read file")
+    
+    # For images, videos, and PDFs, redirect to a direct URL
+    if is_image(full_path) or is_video(full_path) or is_pdf(full_path):
+        return url_for('download_file', path=file_path)
+    
+    # For other files, suggest downloading
+    abort(400, "File type not supported for preview")
 
 
 @app.route('/health')

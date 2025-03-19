@@ -1,0 +1,25 @@
+<nav class="text-gray-500 font-medium mb-4">
+  <ol class="inline-flex space-x-1 items-center">
+    <li class="flex items-center">
+      <a
+        href="{{ url_for('index') }}"
+        class="text-gray-600 hover:text-gray-900 transition-colors duration-200"
+      >
+        <i class="fas fa-home"></i>
+      </a>
+    </li>
+    {% set paths = current_path.split('/') %} {% set accumulated_path = '' %} {%
+    for path_part in paths %} {% if path_part %}
+    <li class="flex items-center">
+      <span class="mx-1">/</span>
+      {% set accumulated_path = accumulated_path + '/' + path_part %}
+      <a
+        href="{{ url_for('browse', path=accumulated_path) }}"
+        class="hover:text-gray-900 transition-colors duration-200"
+      >
+        {{ path_part }}
+      </a>
+    </li>
+    {% endif %} {% endfor %}
+  </ol>
+</nav>
