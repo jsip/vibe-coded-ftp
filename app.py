@@ -1,3 +1,4 @@
+import hashlib
 from flask import Flask, render_template, request, redirect, url_for, flash, send_file, session, jsonify, abort
 import os
 import tempfile
@@ -402,40 +403,56 @@ def create_directory():
     return redirect(url_for('browse', path=current_path))
 
 
-# New Thumbnail Routes
-
 @app.route('/thumbnail')
 @login_required
 def thumbnail():
-    """Generate a thumbnail for an image file"""
+    """Generate a thumbnail for an image file with caching"""
     file_path = secure_path(request.args.get('path', ''))
     width = int(request.args.get('width', 100))
     height = int(request.args.get('height', 100))
-    
+    quality = int(request.args.get('quality', 80))  # Add quality parameter
+
     if not file_path:
         abort(400, "No file specified")
-    
+
     full_path = get_full_path(file_path)
-    
+
     if not os.path.exists(full_path):
         abort(404, "File not found")
-    
+
     if not is_image(full_path):
         abort(400, "Not an image file")
-    
+
+    # Create cache directory if it doesn't exist
+    cache_dir = os.path.join(tempfile.gettempdir(), 'thumbnail_cache')
+    os.makedirs(cache_dir, exist_ok=True)
+
+    # Create a cache key based on the file path, dimensions, and last modified time
+    file_stat = os.stat(full_path)
+    cache_key = f"{file_path}_{width}x{height}_{quality}_{file_stat.st_mtime}"
+    cache_key_hash = hashlib.md5(cache_key.encode()).hexdigest()
+    cache_path = os.path.join(cache_dir, cache_key_hash)
+
+    # Check if we have a cached version
+    if os.path.exists(cache_path):
+        return send_file(
+            cache_path,
+            mimetype='image/jpeg',
+            download_name=f"thumb_{os.path.basename(file_path)}"
+        )
+
     try:
+        # Generate thumbnail
         img = Image.open(full_path)
         img.thumbnail((width, height))
-        
-        # Create an in-memory file
-        img_io = BytesIO()
-        img_format = img.format or 'JPEG'
-        img.save(img_io, format=img_format)
-        img_io.seek(0)
-        
+
+        # Save the thumbnail to cache
+        img.save(cache_path, format='JPEG', quality=quality, optimize=True)
+
+        # Send the cached file
         return send_file(
-            img_io, 
-            mimetype=f'image/{img_format.lower()}',
+            cache_path,
+            mimetype='image/jpeg',
             download_name=f"thumb_{os.path.basename(file_path)}"
         )
     except Exception as e:
@@ -446,52 +463,69 @@ def thumbnail():
 @app.route('/video-thumbnail')
 @login_required
 def video_thumbnail():
-    """Generate a thumbnail for a video file"""
+    """Generate a thumbnail for a video file with caching"""
     file_path = secure_path(request.args.get('path', ''))
     time_pos = float(request.args.get('time', 1.0))
     width = int(request.args.get('width', 100))
     height = int(request.args.get('height', 100))
-    
+    quality = int(request.args.get('quality', 80))  # Add quality parameter
+
     if not file_path:
         abort(400, "No file specified")
-    
+
     full_path = get_full_path(file_path)
-    
+
     if not os.path.exists(full_path):
         abort(404, "File not found")
-    
+
     if not is_video(full_path):
         abort(400, "Not a video file")
-    
+
+    # Create cache directory if it doesn't exist
+    cache_dir = os.path.join(tempfile.gettempdir(), 'video_thumbnail_cache')
+    os.makedirs(cache_dir, exist_ok=True)
+
+    # Create a cache key based on the file path, dimensions, and last modified time
+    file_stat = os.stat(full_path)
+    cache_key = f"{file_path}_{width}x{height}_{time_pos}_{quality}_{file_stat.st_mtime}"
+    cache_key_hash = hashlib.md5(cache_key.encode()).hexdigest()
+    cache_path = os.path.join(cache_dir, f"{cache_key_hash}.jpg")
+
+    # Check if we have a cached version
+    if os.path.exists(cache_path):
+        return send_file(
+            cache_path,
+            mimetype='image/jpeg',
+            download_name=f"thumb_{os.path.basename(file_path)}.jpg"
+        )
+
     try:
         # Create a temporary file for the thumbnail
         with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_file:
             temp_path = temp_file.name
-        
+
         # Use ffmpeg to extract a frame
         (
             ffmpeg
             .input(full_path, ss=time_pos)
             .filter('scale', width, height)
-            .output(temp_path, vframes=1)
+            .output(temp_path, vframes=1, q=2 if quality > 90 else (3 if quality > 80 else 4))
             .overwrite_output()
             .run(capture_stdout=True, capture_stderr=True)
         )
-        
-        # Read the thumbnail and return it
-        with open(temp_path, 'rb') as f:
-            img_data = BytesIO(f.read())
-        
-        # Clean up
+
+        # Copy to cache
+        shutil.copy(temp_path, cache_path)
+
+        # Clean up temp file
         try:
             os.unlink(temp_path)
         except:
             pass
-            
-        img_data.seek(0)
-        
+
+        # Return the cached file
         return send_file(
-            img_data, 
+            cache_path,
             mimetype='image/jpeg',
             download_name=f"thumb_{os.path.basename(file_path)}.jpg"
         )
@@ -507,17 +541,17 @@ def preview_file():
     file_path = secure_path(request.args.get('path', ''))
     if not file_path:
         abort(400, "No file specified")
-    
+
     full_path = get_full_path(file_path)
-    
+
     if not os.path.exists(full_path):
         abort(404, "File not found")
-    
+
     if os.path.isdir(full_path):
         abort(400, "Cannot preview directories")
-    
+
     mime_type, _ = mimetypes.guess_type(full_path)
-    
+
     # For text-based files, return the content directly
     if mime_type and (mime_type.startswith('text/') or mime_type in ['application/json', 'application/xml']):
         try:
@@ -527,11 +561,11 @@ def preview_file():
         except Exception as e:
             logger.error(f"Error reading text file {file_path}: {e}")
             abort(500, "Failed to read file")
-    
+
     # For images, videos, and PDFs, redirect to a direct URL
     if is_image(full_path) or is_video(full_path) or is_pdf(full_path):
         return url_for('download_file', path=file_path)
-    
+
     # For other files, suggest downloading
     abort(400, "File type not supported for preview")
 

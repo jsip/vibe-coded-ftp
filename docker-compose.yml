@@ -12,10 +12,6 @@ services:
       - WEB_USERNAME=${WEB_USERNAME} # Username for Web UI
       - WEB_PASSWORD=${WEB_PASSWORD} # Password for Web UI
     restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: '2.0'
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 60s

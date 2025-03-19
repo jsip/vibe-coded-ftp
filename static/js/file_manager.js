@@ -15,6 +15,10 @@ const fileManager = () => {
     previewContent: "",
     previewLoading: false,
 
+    init() {
+      this.initLazyLoading();
+    },
+
     handleFileSelect(event) {
       this.selectedFiles = Array.from(event.target.files);
       console.log("Files selected:", this.selectedFiles.length);
@@ -134,5 +138,45 @@ const fileManager = () => {
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#039;");
     },
+
+    initLazyLoading() {
+      if ('IntersectionObserver' in window) {
+        const lazyThumbnails = document.querySelectorAll('.lazy-thumbnail');
+        const imageObserver = new IntersectionObserver((entries) => {
+          entries.forEach(entry => {
+            if (entry.isIntersecting) {
+              const lazyImage = entry.target;
+              lazyImage.src = lazyImage.dataset.src;
+              lazyImage.classList.remove('lazy-thumbnail');
+              imageObserver.unobserve(lazyImage);
+            }
+          });
+        }, {
+          rootMargin: '100px 0px'
+        });
+    
+        lazyThumbnails.forEach(image => {
+          imageObserver.observe(image);
+        });
+      } else {
+        // Fallback for browsers without intersection observer support
+        const lazyLoad = () => {
+          const lazyThumbnails = document.querySelectorAll('.lazy-thumbnail');
+          lazyThumbnails.forEach(lazyImage => {
+            if ((lazyImage.getBoundingClientRect().top <= window.innerHeight && 
+                lazyImage.getBoundingClientRect().bottom >= 0) && 
+                getComputedStyle(lazyImage).display !== 'none') {
+              lazyImage.src = lazyImage.dataset.src;
+              lazyImage.classList.remove('lazy-thumbnail');
+            }
+          });
+        };
+    
+        document.addEventListener('scroll', lazyLoad);
+        window.addEventListener('resize', lazyLoad);
+        window.addEventListener('orientationChange', lazyLoad);
+        lazyLoad();
+      }
+    }
   };
 };
